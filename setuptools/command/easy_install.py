@@ -2165,27 +2165,25 @@ class WindowsExecutableLauncherWriter(WindowsScriptWriter):
         """
         if type_ == 'gui':
             launcher_type = 'gui'
-            ext = '-script.pyw'
-            old = ['.pyw']
         else:
             launcher_type = 'cli'
-            ext = '-script.py'
-            old = ['.py', '.pyc', '.pyo']
-        hdr = cls._adjust_header(type_, header)
-        blockers = [name + x for x in old]
-        yield (name + ext, hdr + script_text, 't', blockers)
+        launcher = get_win_launcher(launcher_type)
+
+        hdr = _to_ascii(cls._adjust_header(type_, header))
+        linesep = _to_ascii(os.linesep)
+
+        stream = io.BytesIO()
+        zf = zipfile.ZipFile(stream, 'w')
+        try:
+            zf.writestr('__main__.py', _to_ascii(script_text))
+        finally:
+            zf.close()
+        zipped_script = stream.getvalue()
+
         yield (
-            name + '.exe', get_win_launcher(launcher_type),
+            name + '.exe', launcher + hdr + linesep + zipped_script,
             'b'  # write in binary mode
         )
-        if not is_64bit():
-            # install a manifest for the launcher to prevent Windows
-            # from detecting it as an installer (which it will for
-            #  launchers like easy_install.exe). Consider only
-            #  adding a manifest for launchers detected as installers.
-            #  See Distribute #143 for details.
-            m_name = name + '.exe.manifest'
-            yield (m_name, load_launcher_manifest(name), 't')
 
 
 # for backward-compatibility
@@ -2201,11 +2199,14 @@ def get_win_launcher(type):
 
     Returns the executable as a byte string.
     """
-    launcher_fn = '%s.exe' % type
-    if is_64bit():
-        launcher_fn = launcher_fn.replace(".", "-64.")
+    if type == 'gui':
+        prefix = 'w'
+    elif type == 'cli':
+        prefix = 't'
     else:
-        launcher_fn = launcher_fn.replace(".", "-32.")
+        raise ValueError("expected 'cli' or 'gui', found %r" % type)
+    bits = '64' if is_64bit() else '32'
+    launcher_fn = '%s%s.exe' % (prefix, bits)
     return resource_string('setuptools', launcher_fn)
 
 
