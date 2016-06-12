@@ -21,8 +21,9 @@ from setuptools.extern import six
 
 import pytest
 
-from setuptools.command.easy_install import nt_quote_arg
-import pkg_resources
+from setuptools.command.easy_install import (
+    nt_quote_arg, WindowsExecutableLauncherWriter
+)
 
 
 pytestmark = pytest.mark.skipif(sys.platform != 'win32', reason="Windows only")
@@ -37,7 +38,7 @@ class WrapperTester:
         return template % locals()
 
     @classmethod
-    def create_script(cls, tmpdir):
+    def create_script(cls, tmpdir, template=None):
         """
         Create a simple script, foo-script.py
 
@@ -45,27 +46,26 @@ class WrapperTester:
         Python executable to run.  The wrapper will use this line to find the
         correct Python executable.
         """
+        script_text = cls.prep_script(template or cls.script_tmpl)
 
-        script = cls.prep_script(cls.script_tmpl)
-
-        with (tmpdir / cls.script_name).open('w') as f:
-            f.write(script)
-
-        # also copy cli.exe to the sample directory
-        with (tmpdir / cls.wrapper_name).open('wb') as f:
-            w = pkg_resources.resource_string('setuptools', cls.wrapper_source)
-            f.write(w)
+        writer = WindowsExecutableLauncherWriter()
+        header = script_text.splitlines()[0]
+        for args in writer._get_script_args(
+                cls.wrapper_type, cls.script_name, header, script_text):
+            wrapper_name = args[0]
+            contents = args[1]
+            with (tmpdir / wrapper_name).open('wb') as f:
+                f.write(contents)
 
 
 class TestCLI(WrapperTester):
-    script_name = 'foo-script.py'
-    wrapper_source = 'cli-32.exe'
-    wrapper_name = 'foo.exe'
+    wrapper_type = 'cli'
+    script_name = 'foo'
     script_tmpl = textwrap.dedent("""
         #!%(python_exe)s
         import sys
         input = repr(sys.stdin.read())
-        print(sys.argv[0][-14:])
+        print(sys.argv[0][-8:])
         print(sys.argv[1:])
         print(input)
         if __debug__:
@@ -105,7 +105,7 @@ class TestCLI(WrapperTester):
         stdout, stderr = proc.communicate('hello\nworld\n'.encode('ascii'))
         actual = stdout.decode('ascii').replace('\r\n', '\n')
         expected = textwrap.dedent(r"""
-            \foo-script.py
+            \foo.exe
             ['arg1', 'arg 2', 'arg "2\\"', 'arg 4\\', 'arg5 a\\\\b']
             'hello\nworld\n'
             non-optimized
@@ -123,26 +123,26 @@ class TestCLI(WrapperTester):
         options as usual. For example, to run in optimized mode and
         enter the interpreter after running the script, you could use -Oi:
         """
-        self.create_script(tmpdir)
         tmpl = textwrap.dedent("""
             #!%(python_exe)s  -Oi
             import sys
             input = repr(sys.stdin.read())
-            print(sys.argv[0][-14:])
+            print(sys.argv[0][-8:])
             print(sys.argv[1:])
             print(input)
             if __debug__:
                 print('non-optimized')
+            sys.stdout.flush()
             sys.ps1 = '---'
             """).lstrip()
-        with (tmpdir / 'foo-script.py').open('w') as f:
-            f.write(self.prep_script(tmpl))
+        self.create_script(tmpdir, tmpl)
         cmd = [str(tmpdir / 'foo.exe')]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
         stdout, stderr = proc.communicate()
         actual = stdout.decode('ascii').replace('\r\n', '\n')
+        print(actual)
         expected = textwrap.dedent(r"""
-            \foo-script.py
+            \foo.exe
             []
             ''
             ---
@@ -158,13 +158,13 @@ class TestCLI(WrapperTester):
         https://bugs.python.org/issue2128
         https://bugs.python.org/issue1759845
         """
-        self.create_script(tmpdir)
         tmpl = textwrap.dedent("""
             #!%(python_exe)s
             import sys
             with open(sys.argv[1], 'w', encoding='utf-8') as f:
                 f.write(repr(sys.argv[2]))
             """).lstrip()
+        self.create_script(tmpdir, tmpl)
         with (tmpdir / 'foo-script.py').open('w') as f:
             f.write(self.prep_script(tmpl))
 
@@ -194,9 +194,8 @@ class TestGUI(WrapperTester):
     Testing the GUI Version
     -----------------------
     """
-    script_name = 'bar-script.pyw'
-    wrapper_source = 'gui-32.exe'
-    wrapper_name = 'bar.exe'
+    wrapper_type = 'gui'
+    script_name = 'bar'
 
     script_tmpl = textwrap.dedent("""
         #!%(python_exe)s
@@ -209,7 +208,6 @@ class TestGUI(WrapperTester):
     def test_basic(self, tmpdir):
         """Test the GUI version with the simple scipt, bar-script.py"""
         self.create_script(tmpdir)
-
         cmd = [
             str(tmpdir / 'bar.exe'),
             str(tmpdir / 'test_output.txt'),
@@ -227,6 +225,8 @@ class TestGUI(WrapperTester):
     def test_with_unicode_argv(self, tmpdir):
         """Testing the GUI version with non-ASCII command-line arguments"""
         self.create_script(tmpdir)
+        with (tmpdir / 'bar-script.pyw').open('w') as f:
+            f.write(self.prep_script(self.script_tmpl))
 
         cmd = [  # first try running the script without the wrapper
             sys.executable,
